@@ -1,0 +1,268 @@
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index df348aa55d3c..70325c431854 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -57,6 +57,27 @@
+ #include "stats.h"
+ #include "autogroup.h"
+ 
++#define SCHEDSCOPE_VRUNTIME_PLACEMENT_BIAS 1
++#define SCHEDSCOPE_VRUNTIME_BIAS_STEP_NS 50000LL
++
++static inline s64 schedscope_vruntime_placement_bias(struct sched_entity *se)
++{
++	struct task_struct *p;
++	int nice;
++
++	if (!SCHEDSCOPE_VRUNTIME_PLACEMENT_BIAS || !entity_is_task(se))
++		return 0;
++
++	p = task_of(se);
++	nice = task_nice(p);
++
++	/*
++	 * Apply a small bounded placement bias so lower nice values
++	 * re-enter slightly earlier and higher nice values slightly later.
++	 */
++	return (s64)nice * SCHEDSCOPE_VRUNTIME_BIAS_STEP_NS;
++}
++
+ /*
+  * The initial- and re-scaling of tunables is configurable
+  *
+@@ -874,14 +895,14 @@ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
+  */
+ static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
+ {
+-	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
+-	struct sched_entity *curr = cfs_rq->curr;
+-	struct sched_entity *best = NULL;
+-	struct sched_entity *best_left = NULL;
++	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node; // the root node 
++	struct sched_entity *curr = cfs_rq->curr; // current
++	struct sched_entity *best = NULL; // best entity found so far
++	struct sched_entity *best_left = NULL; // best entity found in the left subtree
+ 
+-	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
++	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr))) // if the current entity is not on the runqueue or is not eligible, set curr to NULL
+ 		curr = NULL;
+-	best = curr;
++	best = curr; // if the current entity is eligible, it is the best candidate so far for now
+ 
+ 	/*
+ 	 * Once selected, run a task until it either becomes non-eligible or
+@@ -890,8 +911,8 @@ static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
+ 	if (sched_feat(RUN_TO_PARITY) && curr && curr->vlag == curr->deadline)
+ 		return curr;
+ 
+-	while (node) {
+-		struct sched_entity *se = __node_2_se(node);
++	while (node) { // start searching from the root of the tree
++		struct sched_entity *se = __node_2_se(node); // convert the current node to a sched_entity
+ 
+ 		/*
+ 		 * If this entity is not eligible, try the left subtree.
+@@ -904,14 +925,14 @@ static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
+ 		/*
+ 		 * Now we heap search eligible trees for the best (min_)deadline
+ 		 */
+-		if (!best || deadline_gt(deadline, best, se))
+-			best = se;
++		if (!best || deadline_gt(deadline, best, se)) 
++			best = se; // if the current entity is eligible and has a better deadline than the best found so far, update best to be this entity
+ 
+ 		/*
+ 		 * Every se in a left branch is eligible, keep track of the
+ 		 * branch with the best min_deadline
+ 		 */
+-		if (node->rb_left) {
++		if (node->rb_left) { // if there is a left child, check if it has a better min_deadline than the best found so far
+ 			struct sched_entity *left = __node_2_se(node->rb_left);
+ 
+ 			if (!best_left || deadline_gt(min_deadline, best_left, left))
+@@ -5056,6 +5077,7 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+ 	}
+ 
+ 	se->vruntime = vruntime - lag;
++	se->vruntime += schedscope_vruntime_placement_bias(se);
+ 
+ 	/*
+ 	 * When joining the competition; the exisiting tasks will be,
+@@ -5267,16 +5289,16 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+  * 4) do not run the "skip" process, if something else is available
+  */
+ static struct sched_entity *
+-pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
++pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr) // which sched entity should run next on this cfs_rq
+ {
+ 	/*
+ 	 * Enabling NEXT_BUDDY will affect latency but not fairness.
+ 	 */
+-	if (sched_feat(NEXT_BUDDY) &&
+-	    cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next))
++	if (sched_feat(NEXT_BUDDY) && 
++	    cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next)) // if the next entity is eligible to run, then return it immediately, without looking at the rest of the tree
+ 		return cfs_rq->next;
+ 
+-	return pick_eevdf(cfs_rq);
++	return pick_eevdf(cfs_rq); // otherwise, pick the entity with the earliest deadline (which is the one with the smallest vruntime)
+ }
+ 
+ static bool check_cfs_rq_runtime(struct cfs_rq *cfs_rq);
+@@ -8168,17 +8190,17 @@ static struct task_struct *pick_task_fair(struct rq *rq)
+ struct task_struct *
+ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ {
+-	struct cfs_rq *cfs_rq = &rq->cfs;
+-	struct sched_entity *se;
+-	struct task_struct *p;
+-	int new_tasks;
++	struct cfs_rq *cfs_rq = &rq->cfs; // fair runqueue
++	struct sched_entity *se; // scheduling entity
++	struct task_struct *p; // next task to run
++	int new_tasks; // to be used in idle balancing
+ 
+ again:
+-	if (!sched_fair_runnable(rq))
++	if (!sched_fair_runnable(rq)) // if no runnable tasks in fair scheduler
+ 		goto idle;
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+-	if (!prev || prev->sched_class != &fair_sched_class)
++	if (!prev || prev->sched_class != &fair_sched_class) // if previous task is not from fair scheduler
+ 		goto simple;
+ 
+ 	/*
+@@ -8189,8 +8211,8 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
+ 	 * hierarchy, only change the part that actually changes.
+ 	 */
+ 
+-	do {
+-		struct sched_entity *curr = cfs_rq->curr;
++	do { // starting the loop to find the next task to run
++		struct sched_entity *curr = cfs_rq->curr; 
+ 
+ 		/*
+ 		 * Since we got here without doing put_prev_entity() we also
+@@ -8198,11 +8220,11 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
+ 		 * entity, update_curr() will update its vruntime, otherwise
+ 		 * forget we've ever seen it.
+ 		 */
+-		if (curr) {
++		if (curr) { // if there is an entity currently running on this cfs_rq
+ 			if (curr->on_rq)
+-				update_curr(cfs_rq);
++				update_curr(cfs_rq); // update vruntime
+ 			else
+-				curr = NULL;
++				curr = NULL; // if the entity is not on the runqueue, forget it
+ 
+ 			/*
+ 			 * This call to check_cfs_rq_runtime() will do the
+@@ -8210,21 +8232,21 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
+ 			 * Therefore the nr_running test will indeed
+ 			 * be correct.
+ 			 */
+-			if (unlikely(check_cfs_rq_runtime(cfs_rq))) {
+-				cfs_rq = &rq->cfs;
++			if (unlikely(check_cfs_rq_runtime(cfs_rq))) { // check if the current entity has passed its runtime slice
++				cfs_rq = &rq->cfs; // if it has, start over from the top of the fair runqueue
+ 
+-				if (!cfs_rq->nr_running)
++				if (!cfs_rq->nr_running) // if there are no runnable tasks in the fair runqueue after throttling,
+ 					goto idle;
+ 
+ 				goto simple;
+ 			}
+ 		}
+ 
+-		se = pick_next_entity(cfs_rq, curr);
++		se = pick_next_entity(cfs_rq, curr); // pick the next entity to run on this cfs_rq, using curr as a hint for where to start looking
+ 		cfs_rq = group_cfs_rq(se);
+ 	} while (cfs_rq);
+ 
+-	p = task_of(se);
++	p = task_of(se); // get the task_struct corresponding to the selected sched_entity
+ 
+ 	/*
+ 	 * Since we haven't yet done put_prev_entity and if the selected task
+@@ -8232,9 +8254,9 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
+ 	 * least amount of cfs_rqs.
+ 	 */
+ 	if (prev != p) {
+-		struct sched_entity *pse = &prev->se;
++		struct sched_entity *pse = &prev->se; // if the selected task is different from the previous task, we need to update the runqueues for both the previous and the new task
+ 
+-		while (!(cfs_rq = is_same_group(se, pse))) {
++		while (!(cfs_rq = is_same_group(se, pse))) { // looking for the lowest common ancestor cfs_rq of the previous and the new task
+ 			int se_depth = se->depth;
+ 			int pse_depth = pse->depth;
+ 
+@@ -8248,23 +8270,23 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
+ 			}
+ 		}
+ 
+-		put_prev_entity(cfs_rq, pse);
+-		set_next_entity(cfs_rq, se);
++		put_prev_entity(cfs_rq, pse); // after finding the common ancestor, update the runqueue for the previous task
++		set_next_entity(cfs_rq, se); // and update the runqueue for the new task
+ 	}
+ 
+ 	goto done;
+-simple:
++simple: // the simple case where the previous task is not from the fair scheduler, so we just need to put it on the runqueue and pick the next task without worrying about the cgroup hierarchy
+ #endif
+ 	if (prev)
+-		put_prev_task(rq, prev);
++		put_prev_task(rq, prev); // ending the previous task's execution on the current CPU
+ 
+-	do {
++	do { // starting the loop to find the next task to run, this is similar to the loop above but without the cgroup hierarchy considerations
+ 		se = pick_next_entity(cfs_rq, NULL);
+ 		set_next_entity(cfs_rq, se);
+ 		cfs_rq = group_cfs_rq(se);
+-	} while (cfs_rq);
++	} while (cfs_rq); // here we dont need to have any special information about the previous task, so we just pick the next entity and set it as the next one to run on each level of the cfs_rq hierarchy until we reach the leaf, which will be the task to run
+ 
+-	p = task_of(se);
++	p = task_of(se); // the task that we have selected to run next
+ 
+ done: __maybe_unused;
+ #ifdef CONFIG_SMP
+@@ -8276,19 +8298,22 @@ done: __maybe_unused;
+ 	list_move(&p->se.group_node, &rq->cfs_tasks);
+ #endif
+ 
+-	if (hrtick_enabled_fair(rq))
++	if (hrtick_enabled_fair(rq)) // if the high-resolution timer tick is enabled for the fair scheduler, we need to start it for the new task
+ 		hrtick_start_fair(rq, p);
+ 
+ 	update_misfit_status(p, rq);
+ 	sched_fair_update_stop_tick(rq, p);
+-
+-	return p;
++	trace_printk(
++		"[SCHED_TRACE] ts=%llu cpu=%d ev=pick prev=%d next=%d vruntime=%llu nice=%d\n",
++		ktime_get_ns(), cpu_of(rq), prev ? prev->pid : -1, p->pid,
++		(unsigned long long)p->se.vruntime, task_nice(p));
++	return p; // return the next task to run
+ 
+ idle:
+-	if (!rf)
++	if (!rf) // if there are no rq_flags, we can't do idle balancing, so we just return NULL to indicate that there are no tasks to run
+ 		return NULL;
+ 
+-	new_tasks = newidle_balance(rq, rf);
++	new_tasks = newidle_balance(rq, rf); // the current CPU is idle, so if there are any tasks that can be moved to this CPU from other CPUs, we do that using newidle_balance, which will return the number of tasks that were moved to this CPU
+ 
+ 	/*
+ 	 * Because newidle_balance() releases (and re-acquires) rq->lock, it is
+@@ -8298,7 +8323,7 @@ done: __maybe_unused;
+ 	if (new_tasks < 0)
+ 		return RETRY_TASK;
+ 
+-	if (new_tasks > 0)
++	if (new_tasks > 0) // if we found a new task to run on this CPU, we need to start over from the top of the fair runqueue to pick the next task to run, since the new task might have a higher priority than any of the tasks that were already on this CPU
+ 		goto again;
+ 
+ 	/*

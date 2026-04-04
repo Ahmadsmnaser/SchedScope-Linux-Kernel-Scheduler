@@ -1,0 +1,241 @@
+diff --git a/init/main.c b/init/main.c
+index 436d73261810..4edc981bb883 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -889,6 +889,7 @@ void start_kernel(void)
+ 	boot_cpu_init();
+ 	page_address_init();
+ 	pr_notice("%s", linux_banner);
++	pr_notice("SchedScope validation printk: kernel rebuild is active\n");
+ 	early_security_init();
+ 	setup_arch(&command_line);
+ 	setup_boot_config();
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 802551e0009b..e227317b3537 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2130,14 +2130,18 @@ void activate_task(struct rq *rq, struct task_struct *p, int flags)
+ 		sched_mm_cid_migrate_to(rq, p);
+ 
+ 	enqueue_task(rq, p, flags);
+-
++	trace_printk("[SCHED_TRACE] ts=%llu cpu=%d ev=enqueue pid=%d vruntime=%llu nice=%d\n",
++		ktime_get_ns(), cpu_of(rq), p->pid,
++		(unsigned long long)p->se.vruntime, task_nice(p));
+ 	p->on_rq = TASK_ON_RQ_QUEUED;
+ }
+ 
+ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
+ {
+ 	p->on_rq = (flags & DEQUEUE_SLEEP) ? 0 : TASK_ON_RQ_MIGRATING;
+-
++	trace_printk("[SCHED_TRACE] ts=%llu cpu=%d ev=dequeue pid=%d vruntime=%llu nice=%d\n",
++		ktime_get_ns(), cpu_of(rq), p->pid,
++		(unsigned long long)p->se.vruntime, task_nice(p));
+ 	dequeue_task(rq, p, flags);
+ }
+ 
+@@ -2225,6 +2229,10 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
+ 	else if (sched_class_above(p->sched_class, rq->curr->sched_class))
+ 		resched_curr(rq);
+ 
++	if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
++		trace_printk("[SCHED_TRACE] ts=%llu cpu=%d ev=preempt curr=%d cand=%d\n",
++			ktime_get_ns(), cpu_of(rq), rq->curr->pid, p->pid);
++
+ 	/*
+ 	 * A queue event has occurred, and we're going to schedule.  In
+ 	 * this case, we can save a useless back to back clock update.
+@@ -5324,14 +5332,14 @@ static __always_inline struct rq *
+ context_switch(struct rq *rq, struct task_struct *prev,
+ 	       struct task_struct *next, struct rq_flags *rf)
+ {
+-	prepare_task_switch(rq, prev, next);
++	prepare_task_switch(rq, prev, next); // prepare to switch tasks, including architecture specific hooks
+ 
+ 	/*
+ 	 * For paravirt, this is coupled with an exit in switch_to to
+ 	 * combine the page table reload and the switch backend into
+ 	 * one hypercall.
+ 	 */
+-	arch_start_context_switch(prev);
++	arch_start_context_switch(prev); // architecture specific preparations for context switch
+ 
+ 	/*
+ 	 * kernel -> kernel   lazy + transfer active
+@@ -5989,8 +5997,8 @@ static void put_prev_task_balance(struct rq *rq, struct task_struct *prev,
+ static inline struct task_struct *
+ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ {
+-	const struct sched_class *class;
+-	struct task_struct *p;
++	const struct sched_class *class; // to move between classes when searching for the next task
++	struct task_struct *p; // the next task to run
+ 
+ 	/*
+ 	 * Optimization: we know that if all tasks are in the fair class we can
+@@ -5998,15 +6006,15 @@ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	 * higher scheduling class, because otherwise those lose the
+ 	 * opportunity to pull in more work from other CPUs.
+ 	 */
+-	if (likely(!sched_class_above(prev->sched_class, &fair_sched_class) &&
+-		   rq->nr_running == rq->cfs.h_nr_running)) {
++	if (likely(!sched_class_above(prev->sched_class, &fair_sched_class) && // first part means that prev not in a higher class than fair class
++		   rq->nr_running == rq->cfs.h_nr_running)) { // second part means that all tasks are in fair class
+ 
+-		p = pick_next_task_fair(rq, prev, rf);
+-		if (unlikely(p == RETRY_TASK))
++		p = pick_next_task_fair(rq, prev, rf); // pick the next task from the fair class
++	if (unlikely(p == RETRY_TASK)) // the the pick_next_task_fair() cant pick a task, it returns RETRY_TASK
+ 			goto restart;
+ 
+ 		/* Assume the next prioritized class is idle_sched_class */
+-		if (!p) {
++		if (!p) { // fair dont have a task to run, so we need to check the idle class
+ 			put_prev_task(rq, prev);
+ 			p = pick_next_task_idle(rq);
+ 		}
+@@ -6017,7 +6025,7 @@ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ restart:
+ 	put_prev_task_balance(rq, prev, rf);
+ 
+-	for_each_class(class) {
++	for_each_class(class) { // iterate over the scheduling classes, starting from the highest one, to find the next task to run
+ 		p = class->pick_next_task(rq);
+ 		if (p)
+ 			return p;
+@@ -6575,24 +6583,24 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+  */
+ static void __sched notrace __schedule(unsigned int sched_mode)
+ {
+-	struct task_struct *prev, *next;
+-	unsigned long *switch_count;
+-	unsigned long prev_state;
+-	struct rq_flags rf;
+-	struct rq *rq;
+-	int cpu;
++	struct task_struct *prev, *next; // prev -> the current task / next -> the task to switch to
++	unsigned long *switch_count; // a pointer to the context switch count of the task to switch from, either voluntary or involuntary
++	unsigned long prev_state; // the current task situation, either running, interruptible sleep, uninterruptible sleep, etc.
++	struct rq_flags rf; // flags for the runqueue lock, used by rq_lock() and rq_unlock()
++	struct rq *rq; // the runqueue of the current CPU
++	int cpu; // the current CPU number
+ 
+-	cpu = smp_processor_id();
+-	rq = cpu_rq(cpu);
+-	prev = rq->curr;
++	cpu = smp_processor_id(); // get the current CPU number
++	rq = cpu_rq(cpu); // get the runqueue of the current CPU
++	prev = rq->curr; // get the current task
+ 
+ 	schedule_debug(prev, !!sched_mode);
+ 
+ 	if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
+ 		hrtick_clear(rq);
+ 
+-	local_irq_disable();
+-	rcu_note_context_switch(!!sched_mode);
++	local_irq_disable(); // disable interrupts on the local CPU to avoid race conditions and ensure that the scheduler runs atomically
++	rcu_note_context_switch(!!sched_mode); // notify RCU of the context switch, which is important for RCU's grace period detection and callback invocation
+ 
+ 	/*
+ 	 * Make sure that signal_pending_state()->signal_pending() below
+@@ -6609,29 +6617,30 @@ static void __sched notrace __schedule(unsigned int sched_mode)
+ 	 * Also, the membarrier system call requires a full memory barrier
+ 	 * after coming from user-space, before storing to rq->curr.
+ 	 */
+-	rq_lock(rq, &rf);
+-	smp_mb__after_spinlock();
++	rq_lock(rq, &rf); // lock the runqueue to protect against concurrent modifications and ensure that the scheduler's operations are atomic
++	smp_mb__after_spinlock(); // ensure that all memory operations before this point are completed before any that follow, which is important for the correctness of the scheduler and the visibility of changes to other CPUs
+ 
+ 	/* Promote REQ to ACT */
+-	rq->clock_update_flags <<= 1;
+-	update_rq_clock(rq);
++	rq->clock_update_flags <<= 1; // rq->clock_update_flags is a bitfield where the least significant bit (RQCF_REQ_SKIP) indicates whether a clock update is requested, and the next bit (RQCF_ACT_SKIP) indicates whether the clock update should be skipped. By left-shifting the flags, we promote any pending request to an active state for this scheduling cycle.
++	update_rq_clock(rq); // update the runqueue's clock, which is important for scheduling decisions that depend on time, such as time slices and load balancing
+ 
+-	switch_count = &prev->nivcsw;
++	switch_count = &prev->nivcsw; // by default, we assume the context switch is involuntary, so we point to the involuntary context switch count of the current task. If the task voluntarily yields the CPU, then we will switch this to point to the voluntary context switch count later on.
++	// nivcsw stands for "number of involuntary context switches", while nvcsw stands for "number of voluntary context switches". An involuntary context switch happens when a task is preempted by the scheduler, while a voluntary context switch happens when a task calls schedule() or yields the CPU.
+ 
+ 	/*
+ 	 * We must load prev->state once (task_struct::state is volatile), such
+ 	 * that we form a control dependency vs deactivate_task() below.
+ 	 */
+-	prev_state = READ_ONCE(prev->__state);
+-	if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
+-		if (signal_pending_state(prev_state, prev)) {
+-			WRITE_ONCE(prev->__state, TASK_RUNNING);
+-		} else {
++	prev_state = READ_ONCE(prev->__state); // read the current task's state atomically
++	if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) { // getting here means that the current task want to sleep, and the scheduler is not called for preemption. So we need to check if the task can be put to sleep or not.
++		if (signal_pending_state(prev_state, prev)) { // if there is a pending signal for the current task, then we can't put it to sleep, so we just set its state back to running and skip the rest of the scheduler. This is because the task needs to handle the signal before it can go to sleep.
++			WRITE_ONCE(prev->__state, TASK_RUNNING); // set the task state back to running, since we won't put it to sleep
++		} else { // if there is no pending signal, then we can put the task to sleep. We need to check if the task should contribute to the load average or not, and then deactivate it from the runqueue.
+ 			prev->sched_contributes_to_load =
+ 				(prev_state & TASK_UNINTERRUPTIBLE) &&
+-				!(prev_state & TASK_NOLOAD) &&
+-				!(prev_state & TASK_FROZEN);
+-
++				!(prev_state & TASK_NOLOAD) && // NOLOAD means that the task should not contribute to the load average, even if it is sleeping in an uninterruptible state. This is useful for tasks that are not doing any work and should not affect the scheduler's decisions.
++				!(prev_state & TASK_FROZEN); // FORZEN means that the task is frozen by the freezer subsystem, and it should not contribute to the load average either. This is because frozen tasks are not runnable and should not affect the scheduler's decisions.
++			// the task is sleeping in an uninterruptible state, and it is not marked as NOLOAD or FROZEN, then it contributes to the load average. This is important for the scheduler to make informed decisions about load balancing and CPU frequency scaling.
+ 			if (prev->sched_contributes_to_load)
+ 				rq->nr_uninterruptible++;
+ 
+@@ -6646,30 +6655,32 @@ static void __sched notrace __schedule(unsigned int sched_mode)
+ 			 *
+ 			 * After this, schedule() must not care about p->state any more.
+ 			 */
+-			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
++			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK); // remove the current task from the runqueue, and mark it as sleeping. DEQUEUE_SLEEP means that the task is going to sleep, so we should not consider it for scheduling until it wakes up. DEQUEUE_NOCLOCK means that we should not update the runqueue's clock when deactivating this task, since it is not contributing to the load average.
++				// After this call, the current task is no longer on the runqueue, and its state is set to TASK_WAKING. This means that the task is sleeping and waiting for an event to wake it up. The scheduler will not consider this task for scheduling until it wakes up and is added back to the runqueue.
++				
+ 
+-			if (prev->in_iowait) {
+-				atomic_inc(&rq->nr_iowait);
+-				delayacct_blkio_start();
++			if (prev->in_iowait) { // if the prev task is in I/O wait, then we need to account for that as well.
++				atomic_inc(&rq->nr_iowait); // the I/O wait count is used for load balancing and CPU frequency scaling decisions.
++				delayacct_blkio_start(); // start accounting for block I/O delay, which is important for performance monitoring and analysis. This will track the time spent waiting for block I/O operations to complete, which can be a significant factor in a task's latency and responsiveness.
+ 			}
+ 		}
+-		switch_count = &prev->nvcsw;
++		switch_count = &prev->nvcsw; // if the task is sleeping voluntarily, then we switch to count voluntary context switches instead of involuntary ones. This is because a voluntary context switch happens when a task calls schedule() or yields the CPU, while an involuntary context switch happens when a task is preempted by the scheduler. By counting voluntary context switches, we can track how many times a task has voluntarily given up the CPU, which can be useful for performance analysis and debugging.
+ 	}
+ 
+-	next = pick_next_task(rq, prev, &rf);
+-	clear_tsk_need_resched(prev);
+-	clear_preempt_need_resched();
++	next = pick_next_task(rq, prev, &rf); // picking the next task
++	clear_tsk_need_resched(prev); // clear the TIF_NEED_RESCHED flag of the current task, since we are about to switch to another task. This is important to prevent unnecessary calls to schedule() when the current task is running again.
++	clear_preempt_need_resched(); // clear the preempt_need_resched flag, which is used to indicate that a preemption is needed. This is important to prevent unnecessary preemptions when the current task is running again.
+ #ifdef CONFIG_SCHED_DEBUG
+ 	rq->last_seen_need_resched_ns = 0;
+ #endif
+ 
+-	if (likely(prev != next)) {
+-		rq->nr_switches++;
++	if (likely(prev != next)) { // check if the new task is not the same task as the current task. If they are the same, then we can skip the context switch and just update the runqueue and return.
++		rq->nr_switches++; // javing a context switch
+ 		/*
+ 		 * RCU users of rcu_dereference(rq->curr) may not see
+ 		 * changes to task_struct made by pick_next_task().
+ 		 */
+-		RCU_INIT_POINTER(rq->curr, next);
++		RCU_INIT_POINTER(rq->curr, next);// now offically the new task is running on our CPU, we need to update rq->curr to point to the new task. This is important for RCU readers that dereference rq->curr, as they need to see the correct task_struct for the currently running task.
+ 		/*
+ 		 * The membarrier system call requires each architecture
+ 		 * to have a full memory barrier after updating
+@@ -6692,8 +6703,8 @@ static void __sched notrace __schedule(unsigned int sched_mode)
+ 		trace_sched_switch(sched_mode & SM_MASK_PREEMPT, prev, next, prev_state);
+ 
+ 		/* Also unlocks the rq: */
+-		rq = context_switch(rq, prev, next, &rf);
+-	} else {
++		rq = context_switch(rq, prev, next, &rf); // here is the context switch happens
++	} else { // the next task is the same as the current task, no need to switch tasks, just update the runqueue and return
+ 		rq->clock_update_flags &= ~(RQCF_ACT_SKIP|RQCF_REQ_SKIP);
+ 
+ 		rq_unpin_lock(rq, &rf);

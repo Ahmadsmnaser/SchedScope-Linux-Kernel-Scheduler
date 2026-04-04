@@ -1,0 +1,10 @@
+{
+  "experiments": [
+    {
+      "name": "baseline_cfs",
+      "repeat": 2,
+      "timeout_seconds": 60,
+      "kernel_append": ""
+    }
+  ]
+}

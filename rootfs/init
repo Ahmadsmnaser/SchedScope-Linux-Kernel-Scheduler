@@ -1,0 +1,21 @@
+#!/bin/sh
+
+/bin/mount -t proc none /proc
+/bin/mount -t sysfs none /sys
+/bin/mount -t devtmpfs none /dev
+/bin/mount -t tmpfs tmpfs /run
+
+/bin/echo ""
+/bin/echo "SchedScope rootfs booted"
+/bin/echo "Kernel: $(/bin/uname -r)"
+/bin/echo "BusyBox shell is ready."
+/bin/echo ""
+
+if grep -q 'schedscope_autorun=1' /proc/cmdline; then
+	/bin/echo "[AUTORUN] starting workload trace collection"
+	/workloads/collect_trace_run.sh
+	/bin/echo "[AUTORUN] trace collection finished"
+	exec /bin/poweroff -f
+fi
+
+exec /bin/sh

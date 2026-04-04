@@ -1,0 +1,8 @@
+.codex
+results/
+plots/
+linux/
+rootfs.cpio.gz
+benchmarks/.phase7_smoke.json
+__pycache__/
+*.pyc
