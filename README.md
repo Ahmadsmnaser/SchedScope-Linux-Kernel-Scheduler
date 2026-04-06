@@ -1,4 +1,4 @@
-# SchedScope
+# SchedScope 🧠⚙️
 
 A Linux kernel scheduler experimentation framework running inside QEMU.
 
@@ -6,7 +6,7 @@ The goal was to go beyond reading about CFS — to instrument it, modify it, mea
 
 ---
 
-## Part of a Two-Project Scheduler Study
+## 🧠 Part of a Two-Project Scheduler Study
 
 This project is one half of a connected study on CPU scheduling:
 
@@ -25,7 +25,7 @@ The userspace simulator was built to iterate on policy ideas fast. SchedScope pr
 
 ---
 
-## What This Project Does
+## 🚀 What This Project Does
 
 - Boots a custom-built Linux 6.6 kernel inside QEMU
 - Instruments `pick_next_task_fair()` with structured `[SCHED_TRACE]` events
@@ -36,7 +36,7 @@ The userspace simulator was built to iterate on policy ideas fast. SchedScope pr
 
 ---
 
-## The Modification
+## 🧪 The Modification
 
 **File:** `linux/kernel/sched/fair.c`
 
@@ -53,7 +53,7 @@ This biases placement at enqueue time, making priority re-enter competition earl
 
 ---
 
-## Measured Results
+## 📊 Measured Results
 
 | Metric | Baseline | Modified |
 |---|---|---|
@@ -68,7 +68,7 @@ This biases placement at enqueue time, making priority re-enter competition earl
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 ```
 Build kernel → Boot in QEMU → Run workloads → Collect traces
@@ -78,7 +78,7 @@ Filter [SCHED_TRACE] events → Normalize → Compute metrics
 CSV export → Plot generation → Baseline vs Modified comparison
 ```
 
-Key components:
+## ⚙️ Key components:
 
 - `linux/kernel/sched/fair.c` — instrumented and modified scheduler
 - `workloads/` — C programs for CPU-bound and IO-bound behavior
@@ -89,7 +89,7 @@ Key components:
 
 ---
 
-## Quick Start
+## 🛠️ Quick Start
 
 ```bash
 # Build workloads
@@ -116,7 +116,7 @@ python3 scripts/generate_plots.py results/run_01 --summary-csv results/summary.c
 
 ---
 
-## Repository Layout
+## 📂 Repository Layout
 
 ```
 schedscope/
@@ -133,7 +133,7 @@ schedscope/
 
 ---
 
-## Outputs Per Run
+## 📦 Outputs Per Run
 
 ```
 results/<run_name>/
@@ -154,7 +154,7 @@ plots/<run_name>/
 
 ---
 
-## What I Would Do Differently
+## 🔧 What I Would Do Differently
 
 - Use custom tracepoints (`TRACE_EVENT`) instead of `trace_printk` — lower overhead and cleaner output
 - Add an explicit task completion event to the trace schema to avoid inferred turnaround times
@@ -163,13 +163,7 @@ plots/<run_name>/
 
 ---
 
-## Interview Narrative
-
-> "I instrumented `pick_next_task_fair()` in Linux 6.6 running inside QEMU, then introduced a controlled vruntime placement bias and measured its effect on context switches, preemptions, and fairness. To iterate on policy ideas faster, I also built a companion userspace simulator in C that mirrors the same trace format and metrics pipeline — so I could validate logic in milliseconds before touching kernel code."
-
----
-
-## Docs
+## 📚 Docs
 
 - [Architecture Overview](docs/architecture.md)
 - [Experiments Guide](docs/experiments.md)
